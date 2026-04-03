@@ -250,3 +250,189 @@ delimiter ;
 set @bal = 5000;
 call addservicecharge(@bal);
 select @bal;
+
+-- Trigger tasks
+-- BEFORE INSERT Trigger on Accounts
+delimiter //
+create trigger before_insert_accounts
+before insert on accounts
+for each row
+begin
+if new.balance<0 then
+signal sqlstate '45000'
+set message_text='balance cannot be negative';
+end if;
+end //
+delimiter ;
+
+-- AFTER INSERT Trigger on Accounts
+delimiter //
+create trigger after_insert_accounts
+after insert on accounts
+for each row
+begin 
+insert into accountaudit(accountid, actiontype, oldbalance, newbalance, actiondate, remarks)
+    values(new.accountid,'Account Created',0,new.balance,now(),'New account added');
+end //
+delimiter ;
+
+-- BEFORE UPDATE Trigger on Accounts
+delimiter //
+create trigger before_update_accounts
+before update on accounts
+for each row
+begin
+if new.balance < 0 then
+signal sqlstate '45000'
+set message_text = 'balance cannot be negative';
+end if;
+end //
+delimiter ;
+
+-- AFTER UPDATE Trigger on Accounts
+delimiter //
+create trigger after_update_accounts
+after update on accounts
+for each row
+begin
+    if old.balance <> new.balance then
+        insert into accountaudit(accountid, actiontype, oldbalance, newbalance, actiondate, remarks)
+        values (new.accountid, 'Balance Updated', old.balance, new.balance, now(), 'Balance changed');
+    end if;
+end //
+delimiter ;
+
+-- BEFORE INSERT Trigger on Transactions
+delimiter //
+create trigger before_insert_transactions
+before insert on transactions
+for each row
+begin
+    if new.amount <= 0 then
+        signal sqlstate '45000'
+        set message_text = 'amount must be greater than zero';
+    end if;
+end //
+delimiter ;
+
+-- AFTER INSERT Trigger on Transactions
+delimiter //
+create trigger after_insert_transactions_deposit
+after insert on transactions
+for each row
+begin
+    if new.transactiontype='Deposit' then
+        update accounts
+        set balance=balance + new.amount
+        where accountid=new.accountid;
+    end if;
+end //
+delimiter ;
+
+-- AFTER INSERT Trigger on Transactions
+delimiter //
+create trigger after_insert_transactions_withdraw
+after insert on transactions
+for each row
+begin
+    if new.transactiontype='Withdrawal' then
+        update accounts
+        set balance=balance - new.amount
+        where accountid=new.accountid;
+    end if;
+end //
+delimiter ;
+
+-- BEFORE DELETE Trigger on Branches
+delimiter //
+create trigger before_delete_branches
+before delete on branches
+for each row
+begin
+    if exists(
+        select 1 from accounts where branchid=old.branchid
+    )then
+        signal sqlstate '45000'
+        set message_text='cannot delete branch with existing accounts';
+    end if;
+end //
+delimiter ;
+
+-- BEFORE INSERT Trigger on Loans
+delimiter //
+create trigger before_insert_loans
+before insert on loans
+for each row
+begin
+    if new.loanamount<10000 then
+        signal sqlstate '45000'
+        set message_text='loan amount must be at least 10000';
+    end if;
+end //
+delimiter ;
+
+-- AFTER UPDATE Trigger on Loans
+delimiter //
+create trigger after_update_loans
+after update on loans
+for each row
+begin
+    if old.loanstatus='Pending' 
+       and new.loanstatus in ('Approved', 'Closed') then
+        insert into accountaudit(accountid, actiontype, oldbalance, newbalance, actiondate, remarks)
+        values (null, 'Loan Status Changed', 0, 0, now(), 
+        concat('Loan ', old.loanid,' changed to ', new.loanstatus));
+    end if;
+end //
+delimiter ;
+
+-- Combined business problems
+-- Task 1
+delimiter //
+create procedure getcustomersabovebranchavg()
+begin
+    select distinct c.* from customers c join accounts a on c.customerid = a.customerid
+    where a.balance>(select avg(a2.balance) from accounts a2 where a2.branchid = a.branchid);
+end //
+delimiter ;
+
+-- Task 2
+create view vw_activecustomers as
+select * from customers where customerstatus='Active';
+delimiter //
+create procedure getactivecustomers()
+begin
+    select * from vw_activecustomers;
+end //
+delimiter ;
+
+-- Task 3
+delimiter //
+create trigger after_update_accounts_deposit
+after update on accounts
+for each row
+begin
+    if new.balance>old.balance then
+        insert into accountaudit(accountid, actiontype, oldbalance, newbalance, actiondate, remarks)
+        values (new.accountid, 'Deposit', old.balance, new.balance, now(), 'Deposit via procedure');
+    end if;
+end //
+delimiter ;
+
+-- Task 4
+create view vw_customerreport as
+select c.customername, b.branchname, a.accountnumber,max(t.transactiondate) as latesttransactiondate
+from customers c
+join accounts a on c.customerid = a.customerid
+join branches b on a.branchid = b.branchid
+left join transactions t on a.accountid = t.accountid
+group by c.customername, b.branchname, a.accountnumber;
+
+-- Task 5
+delimiter //
+create procedure gettransactioncount(in p_customerid int)
+begin
+    select count(*) as totaltransactions from transactions
+    where accountid in (select accountid from accounts where customerid = p_customerid);
+end //
+delimiter ;
